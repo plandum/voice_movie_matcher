@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+pymysql
+sqlalchemy
+python-dotenv
+python-multipart
+ffmpeg-python
+pydub
+librosa
+numpy
+scipy
+audioread
+scikit-image

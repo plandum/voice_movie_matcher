@@ -1,0 +1,7 @@
+venv
+venv311
+app/__pycache__
+app/utils/__pycache__
+app/routes/__pycache__
+media/fragments/*
+media/uploads/*
