@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, TIMESTAMP
+from sqlalchemy import Column, Integer, String, ForeignKey, TIMESTAMP, DateTime, func
 from sqlalchemy.dialects.mysql import BINARY
 
 from sqlalchemy.ext.declarative import declarative_base
@@ -17,5 +17,11 @@ class AudioFingerprint(Base):
     __tablename__ = "audio_fingerprints"
     id = Column(Integer, primary_key=True, index=True)
     movie_id = Column(Integer, ForeignKey("movies.id"), nullable=False)
-    hash = Column(Integer)
     timestamp = Column(Integer, nullable=False)
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    hashed_password = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

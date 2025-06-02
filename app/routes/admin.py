@@ -81,7 +81,7 @@ def upload_video(
     # Сохраняем только уникальные пики
     unique_peaks = sorted(set(round_time(t) for t in peak_times))
     for t in unique_peaks:
-        db.add(models.AudioFingerprint(movie_id=movie.id, hash=None, timestamp=t))
+        db.add(models.AudioFingerprint(movie_id=movie.id, timestamp=t))
 
 
     db.commit()

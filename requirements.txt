@@ -11,3 +11,6 @@ numpy
 scipy
 audioread
 scikit-image
+alembic
+python-jose[cryptography] 
+passlib[bcrypt]
