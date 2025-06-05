@@ -14,3 +14,9 @@ scikit-image
 alembic
 python-jose[cryptography] 
 passlib[bcrypt]
+sqladmin
+email-validator
+Jinja2
+itsdangerous
+httpx
+pydantic-settings

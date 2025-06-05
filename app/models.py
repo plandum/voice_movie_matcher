@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, ForeignKey, TIMESTAMP, DateTime, func
 from sqlalchemy.dialects.mysql import BINARY
-
+from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
@@ -13,10 +13,16 @@ class Movie(Base):
     fingerprint_hash = Column(String(64), unique=True)
     created_at = Column(TIMESTAMP)
 
+    fingerprints = relationship(
+        "AudioFingerprint",
+        backref="movie",
+        cascade="all, delete-orphan"
+    )
+
 class AudioFingerprint(Base):
     __tablename__ = "audio_fingerprints"
     id = Column(Integer, primary_key=True, index=True)
-    movie_id = Column(Integer, ForeignKey("movies.id"), nullable=False)
+    movie_id = Column(Integer, ForeignKey("movies.id", ondelete="CASCADE"), nullable=False)
     timestamp = Column(Integer, nullable=False)
 
 class User(Base):

@@ -1,0 +1,21 @@
+<a href="/admin/movies/new" class="button is-primary">Загрузить фильм</a>
+{% extends "sqladmin/list.html" %}
+
+{% block content %}
+  <div class="level">
+    <div class="level-left">
+      <div class="level-item">
+        <h1 class="title is-4">Список фильмов</h1>
+      </div>
+    </div>
+    <div class="level-right">
+      <div class="level-item">
+        <a href="/admin/movies/new" class="btn btn-primary">
+          Загрузить фильм
+        </a>
+      </div>
+    </div>
+  </div>
+
+  {{ super() }}  {# отрисовывает основную таблицу #}
+{% endblock %}
