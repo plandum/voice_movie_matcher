@@ -37,9 +37,17 @@ def compute_peak_hash(peaks: list[float]) -> str:
 @router.post("/upload_video", response_model=schemas.MovieResponse)
 def upload_video(
     title: str = Form(...),
+    description: str = Form(None),
+    poster_url: str = Form(None),
+    language: str = Form("unknown"),
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
+    # Проверка: фильм с таким названием уже существует
+    existing_movie = db.query(models.Movie).filter_by(title=title).first()
+    if existing_movie:
+        raise HTTPException(status_code=400, detail="Фильм с таким названием уже существует")
+
     # Сохраняем видеофайл
     video_path = os.path.join(MEDIA_DIR, file.filename)
     with open(video_path, "wb") as buffer:
@@ -51,7 +59,7 @@ def upload_video(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка извлечения аудио: {e}")
 
-    # Загружаем аудио и извлекаем пики
+    # Обработка аудио
     try:
         y, sr = librosa.load(audio_path, sr=None)
         peak_times = extract_peaks(y, sr)
@@ -62,27 +70,31 @@ def upload_video(
     if not peak_times:
         raise HTTPException(status_code=400, detail="Пики не найдены в аудиодорожке")
 
-    # Проверка на дубликаты
-    peak_hash = compute_peak_hash(peak_times)
-    existing = db.query(models.Movie).filter_by(fingerprint_hash=peak_hash).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Такой аудиофайл уже загружен ранее")
-
-    # Сохраняем фильм
+    # Создаём фильм
     movie = models.Movie(
         title=title,
         duration=duration,
-        fingerprint_hash=peak_hash
+        description=description,
+        poster_url=poster_url
     )
     db.add(movie)
     db.commit()
     db.refresh(movie)
 
-    # Сохраняем только уникальные пики
+    # Создание аудиодорожки
+    track = models.AudioTrack(
+        movie_id=movie.id,
+        language=language,
+        track_path=audio_path
+    )
+    db.add(track)
+    db.commit()
+    db.refresh(track)
+
+    # Сохраняем фингерпринты
     unique_peaks = sorted(set(round_time(t) for t in peak_times))
     for t in unique_peaks:
-        db.add(models.AudioFingerprint(movie_id=movie.id, timestamp=t))
-
+        db.add(models.AudioFingerprint(audio_track_id=track.id, timestamp=t))
 
     db.commit()
 

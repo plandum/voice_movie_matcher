@@ -33,8 +33,8 @@ class MovieAdmin(ModelView, model=Movie):
         Movie.id,
         Movie.title,
         Movie.duration,
-        Movie.created_at,
-        Movie.fingerprint_hash,
+        Movie.poster_url,
+        Movie.created_at
     ]
 
     async def add(self, request: Request) -> HTMLResponse:

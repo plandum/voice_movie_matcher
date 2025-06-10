@@ -30,7 +30,7 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_user)
 
-    return db_user
+    return schemas.UserResponse.from_orm_with_status(db_user)
 
 @router.post("/login", response_model=schemas.Token)
 def auth_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):

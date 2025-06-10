@@ -1,0 +1,38 @@
+{% extends "sqladmin/layout.html" %}
+
+{% block content %}
+<div class="col-12">
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title">Загрузка аудиодорожки</h3>
+    </div>
+    <div class="card-body">
+      <form method="post" enctype="multipart/form-data">
+        <div class="mb-3">
+          <label class="form-label">Фильм</label>
+          <select class="form-select" name="movie_id" required>
+            {% for movie in movies %}
+              <option value="{{ movie.id }}">{{ movie.title }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label">Язык</label>
+          <input type="text" name="language" class="form-control" placeholder="например: ru, en, es">
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label">Аудиофайл</label>
+          <input type="file" name="file" class="form-control" required>
+        </div>
+
+        <div class="form-footer">
+          <button type="submit" class="btn btn-primary">Добавить</button>
+          <a href="/admin/audiotrack/list" class="btn btn-secondary">Отмена</a>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

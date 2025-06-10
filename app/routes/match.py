@@ -47,40 +47,62 @@ def match_audio(file: UploadFile = File(...), db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка генерации пиков: {e}")
 
-    # Получаем все пики из базы
-    db_peaks = db.query(models.AudioFingerprint.movie_id, models.AudioFingerprint.timestamp).all()
+    # Получаем все пики из базы с track_id и movie_id
+    db_peaks = (
+        db.query(
+            models.AudioFingerprint.audio_track_id,
+            models.AudioFingerprint.timestamp,
+            models.AudioTrack.movie_id
+        )
+        .join(models.AudioTrack, models.AudioFingerprint.audio_track_id == models.AudioTrack.id)
+        .all()
+    )
+
     if not db_peaks:
         raise HTTPException(status_code=404, detail="В базе нет отпечатков")
 
-    # Сравнение
+    # Сравнение по смещениям
     offsets = []
-    for movie_id, db_ts in db_peaks:
+    for track_id, db_ts, movie_id in db_peaks:
         for frag_ts in fragment_peaks:
             offset = round(float(db_ts) - float(frag_ts), 1)
-            offsets.append((movie_id, offset))
+            offsets.append(((track_id, movie_id, offset)))
 
     if not offsets:
         raise HTTPException(status_code=404, detail="Совпадений не найдено")
 
     counter = Counter(offsets)
-    (best_movie_id, best_offset), match_score = counter.most_common(1)[0]
+    (best_track_id, best_movie_id, best_offset), match_score = counter.most_common(1)[0]
     total_checked = len(fragment_peaks)
     confidence = round(min(match_score, total_checked) / total_checked * 100, 2)
 
-
+    # Получаем объекты
+    track = db.query(models.AudioTrack).filter(models.AudioTrack.id == best_track_id).first()
     movie = db.query(models.Movie).filter(models.Movie.id == best_movie_id).first()
-    if not movie:
-        raise HTTPException(status_code=404, detail="Фильм не найден")
 
-    valid_offset = 0 <= best_offset <= movie.duration
+    if not track or not movie:
+        raise HTTPException(status_code=404, detail="Фильм или дорожка не найдены")
+
+    valid_offset = 0 <= best_offset <= (movie.duration or 0)
 
     return {
-        "movie_id": best_movie_id,
-        "match_offset": round(best_offset, 2),
-        "match_score": match_score,
-        "total_checked": total_checked,
-        "confidence": confidence,
-        "duration": movie.duration,
-        "title": movie.title,
-        "valid_offset": valid_offset
+        "movie": {
+            "id": movie.id,
+            "title": movie.title,
+            "duration": movie.duration,
+            "poster_url": movie.poster_url,
+            "description": movie.description,
+        },
+        "audio_track": {
+            "id": track.id,
+            "language": track.language,
+            "track_path": track.track_path,
+        },
+        "match": {
+            "offset": round(best_offset, 2),
+            "score": match_score,
+            "total_checked": total_checked,
+            "confidence": confidence,
+            "valid_offset": valid_offset,
+        }
     }

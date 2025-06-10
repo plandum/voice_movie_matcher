@@ -1,0 +1,20 @@
+{% extends "sqladmin/list.html" %}
+
+{% block content %}
+  <div class="level">
+    <div class="level-left">
+      <div class="level-item">
+        <h1 class="title is-4">Список аудиодорожек</h1>
+      </div>
+    </div>
+    <div class="level-right">
+      <div class="level-item">
+        <a href="/admin/audio-track/new" class="btn btn-primary">
+          ➕ Добавить аудиодорожку
+        </a>
+      </div>
+    </div>
+  </div>
+
+  {{ super() }}
+{% endblock %}
