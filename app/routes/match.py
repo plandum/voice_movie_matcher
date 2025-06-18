@@ -13,6 +13,11 @@ from app.utils.audio import extract_audio_from_video
 from app.utils.peaks import extract_peaks
 from app import models
 
+import mimetypes
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
 router = APIRouter(prefix="/match", tags=["match"])
 
 MEDIA_DIR = "media/fragments"
@@ -27,24 +32,48 @@ def get_db():
 
 @router.post("/audio")
 def match_audio(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    logging.info("===> Начали обработку файла")
     # Сохраняем файл
     fragment_path = os.path.join(MEDIA_DIR, file.filename)
     with open(fragment_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
+    logging.info(f"Сохранили файл: {fragment_path}")
+
+    # Определяем MIME-тип (по расширению)
+    mime_type, _ = mimetypes.guess_type(fragment_path)
+
+    is_wav = (mime_type == 'audio/wav') or fragment_path.lower().endswith('.wav')
+
+    if is_wav:
+        audio_path = fragment_path
+        logging.info("Файл уже является .wav, пропускаем извлечение аудио")
+    else:
+        try:
+            audio_path = extract_audio_from_video(fragment_path, MEDIA_DIR)
+            logging.info(f"Аудио извлечено: {audio_path}")
+        except Exception as e:
+            logging.error(f"Ошибка при извлечении аудио: {e}")
+            raise HTTPException(status_code=500, detail=f"Ошибка извлечения аудио: {e}")
 
     # Извлекаем аудио
-    try:
-        audio_path = extract_audio_from_video(fragment_path, MEDIA_DIR)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка извлечения аудио: {e}")
+    # try:
+    #     audio_path = extract_audio_from_video(fragment_path, MEDIA_DIR)
+    #     logging.info(f"Аудио извлечено: {audio_path}")
+    # except Exception as e:
+    #     logging.error(f"Ошибка при извлечении аудио: {e}")
+    #     raise HTTPException(status_code=500, detail=f"Ошибка извлечения аудио: {e}")
+    
 
     # Генерируем пики
     try:
         y, sr = librosa.load(audio_path, sr=None)
+        logging.info(f"Аудио загружено: длина={len(y)}, sr={sr}")
         fragment_peaks = extract_peaks(y, sr)
+        logging.info(f"Найдено пиков: {len(fragment_peaks)}")
         if len(fragment_peaks) < 10:
             raise HTTPException(status_code=400, detail="Слишком мало пиков для анализа")
     except Exception as e:
+        logging.error(f"Ошибка при генерации пиков: {e}")
         raise HTTPException(status_code=500, detail=f"Ошибка генерации пиков: {e}")
 
     # Получаем все пики из базы с track_id и movie_id
