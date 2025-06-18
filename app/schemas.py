@@ -80,3 +80,6 @@ class MatchedMovieResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class UserEmail(BaseModel):
+    email: EmailStr
