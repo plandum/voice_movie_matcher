@@ -7,12 +7,13 @@ import httpx
 import os
 import sqladmin
 from app.config import settings
-from app.database import get_db
+from app.database import get_db, SessionLocal
 from sqlalchemy.orm import Session
 from app import models
 import shutil
 import uuid
-from app.models import Genre, Country, Actor, Director
+from app.models import Genre, Country, Actor, Director, AudioTrack, AudioFingerprint, Movie
+
 
 from typing import List
 
@@ -120,15 +121,11 @@ async def handle_audio_track_upload(
     language: str = Form("unknown"),
     file: UploadFile = File(...)
 ):
-    from app.database import SessionLocal
-    from app.models import AudioTrack, AudioFingerprint, Movie
+    import librosa
+    import numpy as np
     from app.utils.peaks import extract_peaks
     from app.utils.fingerprinting import generate_hashes_from_peaks
-    import librosa
-    import shutil
-    import os
-    import uuid
-    from librosa.effects import trim
+    import shutil, uuid, os
 
     MEDIA_DIR = "media/uploads"
     os.makedirs(MEDIA_DIR, exist_ok=True)
@@ -139,19 +136,20 @@ async def handle_audio_track_upload(
         shutil.copyfileobj(file.file, buffer)
 
     try:
-        # Нормализуем аудио: частота 16к, моно, до 20 секунд
-        y, sr = librosa.load(path, sr=16000, mono=True, duration=20.0)
-        y, _ = trim(y)
+        y, sr = librosa.load(path, sr=16000, mono=True)
+        print("max(y):", np.max(np.abs(y)))
+        if np.max(np.abs(y)) > 0:
+            y = y / np.max(np.abs(y))
+        peaks = extract_peaks(y, sr, frame_size=512, hop_size=128, threshold=0.1)
+        hashes = generate_hashes_from_peaks(peaks, fan_value=15)
 
-        peaks = extract_peaks(y, sr)
-        hashes = generate_hashes_from_peaks(peaks)
-        duration = round(len(y) / sr)  # длительность после trim
+        duration = round(len(y) / sr)
     except Exception as e:
+        print("Ошибка анализа аудио:", e)
         return HTMLResponse(f"<h3>Ошибка анализа аудио: {e}</h3>", status_code=400)
 
     db = SessionLocal()
     try:
-        # Добавляем аудиотрек
         track = AudioTrack(
             movie_id=movie_id,
             language=language,
@@ -161,12 +159,10 @@ async def handle_audio_track_upload(
         db.commit()
         db.refresh(track)
 
-        # Сохраняем отпечатки
         for h, offset in hashes:
             db.add(AudioFingerprint(audio_track_id=track.id, hash=h, offset=offset))
         db.commit()
 
-        # Обновляем длительность фильма
         movie = db.query(Movie).filter(Movie.id == movie_id).first()
         if movie and (not movie.duration or movie.duration < duration):
             movie.duration = duration
@@ -178,4 +174,4 @@ async def handle_audio_track_upload(
         print("PEAKS UPLOAD:", peaks[:5])
         print("sr (upload):", sr, "len(y):", len(y))
 
-    return RedirectResponse("/admin/audio-track/list", status_code=status.HTTP_302_FOUND)
+    return RedirectResponse("/admin/audio-track/list", status_code=302)

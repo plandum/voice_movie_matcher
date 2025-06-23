@@ -1,7 +1,8 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
 from collections import Counter, defaultdict
-import os, shutil, librosa, mimetypes, logging
+from decimal import Decimal, ROUND_HALF_UP
+import os, shutil, mimetypes, librosa, numpy as np
 
 from app.database import SessionLocal
 from app.models import AudioFingerprint, AudioTrack, Movie
@@ -9,10 +10,9 @@ from app.utils.audio import extract_audio_from_video
 from app.utils.peaks import extract_peaks
 from app.utils.fingerprinting import generate_hashes_from_peaks
 
-router = APIRouter(prefix="/match", tags=["match"])
 
+router = APIRouter(prefix="/match", tags=["match"])
 MEDIA_DIR = "media/fragments"
-logging.basicConfig(level=logging.INFO)
 
 def get_db():
     db = SessionLocal()
@@ -21,14 +21,11 @@ def get_db():
     finally:
         db.close()
 
+def round_time(t: float) -> float:
+    return float(Decimal(str(t)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
 @router.post("/audio")
 def match_audio(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    import os, shutil, librosa, mimetypes
-    from decimal import Decimal, ROUND_HALF_UP
-
-    def round_time(t: float) -> float:
-        return float(Decimal(str(t)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-
     fragment_path = os.path.join(MEDIA_DIR, file.filename)
     os.makedirs(os.path.dirname(fragment_path), exist_ok=True)
     with open(fragment_path, "wb") as buffer:
@@ -45,14 +42,34 @@ def match_audio(file: UploadFile = File(...), db: Session = Depends(get_db)):
             raise HTTPException(500, f"Ошибка извлечения аудио: {e}")
 
     try:
+        # Открываем в нужном формате, без trim!
         y, sr = librosa.load(audio_path, sr=16000, mono=True)
-        peaks = extract_peaks(y, sr, threshold=0.02)
-        hashes = generate_hashes_from_peaks(peaks, fan_value=20)
+        if np.max(np.abs(y)) > 0:
+            y = y / np.max(np.abs(y))
+        # Пики и хеши — тот же threshold/fan_value что и при загрузке!
+        peaks = extract_peaks(y, sr, frame_size=512, hop_size=128, threshold=0.1)
+        hashes = generate_hashes_from_peaks(peaks, fan_value=15)
+
+        print("Длительность аудио (сек):", len(y) / sr)
+        print("Количество пиков:", len(peaks))
+        print("Количество хешей:", len(hashes))
+        print("Пример хеша:", hashes[0] if hashes else "none")
+
+        # Если хешей мало — можно повторить с еще меньшим threshold
+        if len(hashes) < 5:
+            peaks = extract_peaks(y, sr, frame_size=512, hop_size=128, threshold=0.1)
+            hashes = generate_hashes_from_peaks(peaks, fan_value=25)
+            print("🔁 Повторно:")
+            print("  Кол-во пиков:", len(peaks))
+            print("  Кол-во хешей:", len(hashes))
+            print("  Пример хеша:", hashes[0] if hashes else "none")
+
         if len(hashes) == 0:
             raise HTTPException(400, "Слишком мало хешей для анализа")
     except Exception as e:
         raise HTTPException(500, f"Ошибка обработки аудио: {e}")
 
+    # --- Сопоставление ---
     db_hashes = db.query(AudioFingerprint.hash, AudioFingerprint.audio_track_id, AudioFingerprint.offset).all()
     hash_dict = defaultdict(list)
     for h, track_id, offset in db_hashes:
@@ -68,18 +85,29 @@ def match_audio(file: UploadFile = File(...), db: Session = Depends(get_db)):
     print(f"Совпадающих пар: {sum(counter.values())}")
     print("HASHES SEARCH:", hashes[:5])
 
-    # Soft fallback: если не найдено — пробуем частичные хеши
+    # Fallback: если совсем не найдено, пробуем короткие хеши (с меньшим весом)
     if not counter:
         short_hash_dict = defaultdict(list)
         for h, track_id, offset in db_hashes:
             short_hash_dict[h[:8]].append((track_id, offset))
-
         for h, t1 in hashes:
             short = h[:8]
             if short in short_hash_dict:
                 for track_id, t2 in short_hash_dict[short]:
                     delta = round_time(t2 - t1)
-                    counter[(track_id, delta)] += 0.3  # сниженный вес
+                    counter[(track_id, delta)] += 0.3
+    
+    if not counter:
+        very_short_hash_dict = defaultdict(list)
+        for h, track_id, offset in db_hashes:
+            very_short_hash_dict[h[:6]].append((track_id, offset))
+        for h, t1 in hashes:
+            short = h[:6]
+            if short in very_short_hash_dict:
+                for track_id, t2 in very_short_hash_dict[short]:
+                    delta = round_time(t2 - t1)
+                    counter[(track_id, delta)] += 0.1
+
 
     if not counter:
         raise HTTPException(404, detail="Совпадений не найдено")
