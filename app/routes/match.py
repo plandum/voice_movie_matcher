@@ -1,27 +1,18 @@
-import os
-import shutil
-from collections import defaultdict, Counter
-from decimal import Decimal, ROUND_HALF_UP
-
-import librosa
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from collections import Counter, defaultdict
+import os, shutil, librosa, mimetypes, logging
 
 from app.database import SessionLocal
+from app.models import AudioFingerprint, AudioTrack, Movie
 from app.utils.audio import extract_audio_from_video
 from app.utils.peaks import extract_peaks
-from app import models
-
-import mimetypes
-import logging
-
-logging.basicConfig(level=logging.INFO)
+from app.utils.fingerprinting import generate_hashes_from_peaks
 
 router = APIRouter(prefix="/match", tags=["match"])
 
 MEDIA_DIR = "media/fragments"
-os.makedirs(MEDIA_DIR, exist_ok=True)
+logging.basicConfig(level=logging.INFO)
 
 def get_db():
     db = SessionLocal()
@@ -32,87 +23,80 @@ def get_db():
 
 @router.post("/audio")
 def match_audio(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    logging.info("===> Начали обработку файла")
-    # Сохраняем файл
+    import os, shutil, librosa, mimetypes
+    from decimal import Decimal, ROUND_HALF_UP
+
+    def round_time(t: float) -> float:
+        return float(Decimal(str(t)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
     fragment_path = os.path.join(MEDIA_DIR, file.filename)
+    os.makedirs(os.path.dirname(fragment_path), exist_ok=True)
     with open(fragment_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-    logging.info(f"Сохранили файл: {fragment_path}")
 
-    # Определяем MIME-тип (по расширению)
     mime_type, _ = mimetypes.guess_type(fragment_path)
+    is_wav = mime_type == "audio/wav" or fragment_path.endswith(".wav")
+    audio_path = fragment_path
 
-    is_wav = (mime_type == 'audio/wav') or fragment_path.lower().endswith('.wav')
-
-    if is_wav:
-        audio_path = fragment_path
-        logging.info("Файл уже является .wav, пропускаем извлечение аудио")
-    else:
+    if not is_wav:
         try:
             audio_path = extract_audio_from_video(fragment_path, MEDIA_DIR)
-            logging.info(f"Аудио извлечено: {audio_path}")
         except Exception as e:
-            logging.error(f"Ошибка при извлечении аудио: {e}")
-            raise HTTPException(status_code=500, detail=f"Ошибка извлечения аудио: {e}")
+            raise HTTPException(500, f"Ошибка извлечения аудио: {e}")
 
-    # Извлекаем аудио
-    # try:
-    #     audio_path = extract_audio_from_video(fragment_path, MEDIA_DIR)
-    #     logging.info(f"Аудио извлечено: {audio_path}")
-    # except Exception as e:
-    #     logging.error(f"Ошибка при извлечении аудио: {e}")
-    #     raise HTTPException(status_code=500, detail=f"Ошибка извлечения аудио: {e}")
-    
-
-    # Генерируем пики
     try:
-        y, sr = librosa.load(audio_path, sr=None)
-        logging.info(f"Аудио загружено: длина={len(y)}, sr={sr}")
-        fragment_peaks = extract_peaks(y, sr)
-        logging.info(f"Найдено пиков: {len(fragment_peaks)}")
-        if len(fragment_peaks) < 10:
-            raise HTTPException(status_code=400, detail="Слишком мало пиков для анализа")
+        y, sr = librosa.load(audio_path, sr=16000, mono=True)
+        peaks = extract_peaks(y, sr, threshold=0.02)
+        hashes = generate_hashes_from_peaks(peaks, fan_value=20)
+        if len(hashes) == 0:
+            raise HTTPException(400, "Слишком мало хешей для анализа")
     except Exception as e:
-        logging.error(f"Ошибка при генерации пиков: {e}")
-        raise HTTPException(status_code=500, detail=f"Ошибка генерации пиков: {e}")
+        raise HTTPException(500, f"Ошибка обработки аудио: {e}")
 
-    # Получаем все пики из базы с track_id и movie_id
-    db_peaks = (
-        db.query(
-            models.AudioFingerprint.audio_track_id,
-            models.AudioFingerprint.timestamp,
-            models.AudioTrack.movie_id
-        )
-        .join(models.AudioTrack, models.AudioFingerprint.audio_track_id == models.AudioTrack.id)
-        .all()
-    )
+    db_hashes = db.query(AudioFingerprint.hash, AudioFingerprint.audio_track_id, AudioFingerprint.offset).all()
+    hash_dict = defaultdict(list)
+    for h, track_id, offset in db_hashes:
+        hash_dict[h].append((track_id, offset))
 
-    if not db_peaks:
-        raise HTTPException(status_code=404, detail="В базе нет отпечатков")
+    counter = Counter()
+    for h, t1 in hashes:
+        if h in hash_dict:
+            for track_id, t2 in hash_dict[h]:
+                delta = round_time(t2 - t1)
+                counter[(track_id, delta)] += 1
 
-    # Сравнение по смещениям
-    offsets = []
-    for track_id, db_ts, movie_id in db_peaks:
-        for frag_ts in fragment_peaks:
-            offset = round(float(db_ts) - float(frag_ts), 1)
-            offsets.append(((track_id, movie_id, offset)))
+    print(f"Совпадающих пар: {sum(counter.values())}")
+    print("HASHES SEARCH:", hashes[:5])
 
-    if not offsets:
-        raise HTTPException(status_code=404, detail="Совпадений не найдено")
+    # Soft fallback: если не найдено — пробуем частичные хеши
+    if not counter:
+        short_hash_dict = defaultdict(list)
+        for h, track_id, offset in db_hashes:
+            short_hash_dict[h[:8]].append((track_id, offset))
 
-    counter = Counter(offsets)
-    (best_track_id, best_movie_id, best_offset), match_score = counter.most_common(1)[0]
-    total_checked = len(fragment_peaks)
-    confidence = round(min(match_score, total_checked) / total_checked * 100, 2)
+        for h, t1 in hashes:
+            short = h[:8]
+            if short in short_hash_dict:
+                for track_id, t2 in short_hash_dict[short]:
+                    delta = round_time(t2 - t1)
+                    counter[(track_id, delta)] += 0.3  # сниженный вес
 
-    # Получаем объекты
-    track = db.query(models.AudioTrack).filter(models.AudioTrack.id == best_track_id).first()
-    movie = db.query(models.Movie).filter(models.Movie.id == best_movie_id).first()
+    if not counter:
+        raise HTTPException(404, detail="Совпадений не найдено")
 
-    if not track or not movie:
-        raise HTTPException(status_code=404, detail="Фильм или дорожка не найдены")
+    (best_track_id, best_offset), match_score = counter.most_common(1)[0]
+    total_checked = len(hashes)
+    confidence = round(min(match_score / total_checked, 1.0) * 100, 2)
 
-    valid_offset = 0 <= best_offset <= (movie.duration or 0)
+    track = db.query(AudioTrack).filter(AudioTrack.id == best_track_id).first()
+    movie = db.query(Movie).filter(Movie.id == track.movie_id).first()
+
+    try:
+        os.remove(fragment_path)
+        if not is_wav and os.path.exists(audio_path):
+            os.remove(audio_path)
+    except Exception:
+        pass
 
     return {
         "movie": {
@@ -128,10 +112,10 @@ def match_audio(file: UploadFile = File(...), db: Session = Depends(get_db)):
             "track_path": track.track_path,
         },
         "match": {
-            "offset": round(best_offset, 2),
+            "offset": best_offset,
             "score": match_score,
             "total_checked": total_checked,
             "confidence": confidence,
-            "valid_offset": valid_offset,
+            "valid_offset": 0 <= best_offset <= (movie.duration or 0),
         }
     }

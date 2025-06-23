@@ -1,6 +1,8 @@
 from pydantic import BaseModel, EmailStr
 from datetime import datetime
 from typing import Optional
+from app.config import settings
+from typing import List
 
 # === Audio Track ===
 class AudioTrackResponse(BaseModel):
@@ -19,9 +21,17 @@ class AudioTrackCreate(BaseModel):
 # === Movie ===
 class MovieCreate(BaseModel):
     title: str
-    duration: int
-    poster_url: Optional[str] = None
     description: Optional[str] = None
+    duration: Optional[int] = None
+    poster_url: Optional[str] = None
+    year: Optional[int] = None
+    age_rating: Optional[str] = None
+
+    genre_ids: List[int] = []
+    country_ids: List[int] = []
+    actor_ids: List[int] = []
+    director_ids: List[int] = []
+    
 
 class MovieResponse(BaseModel):
     id: int
@@ -29,11 +39,28 @@ class MovieResponse(BaseModel):
     duration: int
     poster_url: Optional[str] = None
     description: Optional[str] = None
+    director: Optional[str] = None
+    cast: Optional[str] = None
+    country: Optional[str] = None
+    year: Optional[int] = None
+    genre: Optional[str] = None
+    age_rating: Optional[str] = None
     created_at: Optional[datetime] = None
     audio_tracks: list[AudioTrackResponse] = []
 
     class Config:
         from_attributes = True
+
+    @property
+    def poster_url_full(self) -> Optional[str]:
+        if self.poster_url:
+            return f"{settings.BACKEND_URL}/{self.poster_url}".replace("//", "/").replace(":/", "://")
+        return None
+
+    def model_dump(self, *args, **kwargs):
+        data = super().model_dump(*args, **kwargs)
+        data["poster_url"] = self.poster_url_full
+        return data
 
 # === User ===
 class UserBase(BaseModel):
@@ -83,3 +110,34 @@ class MatchedMovieResponse(BaseModel):
 
 class UserEmail(BaseModel):
     email: EmailStr
+
+class GenreSchema(BaseModel):
+    id: int
+    name: str
+
+    class Config:
+        orm_mode = True
+
+
+class CountrySchema(BaseModel):
+    id: int
+    name: str
+
+    class Config:
+        orm_mode = True
+
+
+class ActorSchema(BaseModel):
+    id: int
+    name: str
+
+    class Config:
+        orm_mode = True
+
+
+class DirectorSchema(BaseModel):
+    id: int
+    name: str
+
+    class Config:
+        orm_mode = True

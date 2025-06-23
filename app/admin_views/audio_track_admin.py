@@ -18,6 +18,10 @@ class AudioTrackAdmin(ModelView, model=AudioTrack):
 
     list_template = "admin/audio_track_list.html"
 
+    can_create = False
+    can_edit = True
+    can_delete = True
+
     column_list = [
         AudioTrack.id,
         "movie",  # доступен через backref
@@ -36,3 +40,9 @@ class AudioTrackAdmin(ModelView, model=AudioTrack):
         "track_path": "Путь к файлу",
         "created_at": "Дата загрузки"
     }
+    
+    form_columns = [
+        "movie",
+        "language",
+        "track_path",
+    ]

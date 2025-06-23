@@ -6,6 +6,8 @@ from app.admin import setup_admin
 from app.routes import admin as admin_routes
 from app.routes import auth, match  # если есть match
 from app.routes import custom_admin
+from app.routes import movies
+from app.routes import filters
 
 from fastapi.staticfiles import StaticFiles
 
@@ -20,6 +22,8 @@ app.include_router(auth.router)
 app.include_router(admin_routes.router)
 app.include_router(match.router)
 app.include_router(custom_admin.router)
+app.include_router(movies.router)
+app.include_router(filters.router)
 
 # Админка
 setup_admin(app, engine)

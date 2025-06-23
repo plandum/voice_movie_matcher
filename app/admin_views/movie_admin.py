@@ -36,6 +36,19 @@ class MovieAdmin(ModelView, model=Movie):
         Movie.poster_url,
         Movie.created_at
     ]
+    form_columns = [
+        Movie.id,
+        Movie.title,
+        Movie.description,
+        Movie.duration,
+        Movie.directors,
+        Movie.actors,
+        Movie.countries,
+        Movie.genres,
+        Movie.poster_url,
+        Movie.age_rating,
+    ]
+
 
     async def add(self, request: Request) -> HTMLResponse:
         context = {
@@ -45,20 +58,34 @@ class MovieAdmin(ModelView, model=Movie):
         return self.templates.TemplateResponse("admin/movie_upload_form.html", context)
 
     async def create(self, request: Request) -> RedirectResponse:
-        """Этот метод вызывается при POST-запросе с формы создания"""
         form = await request.form()
-        title = form.get("title")
-        file = form.get("file")
 
-        files = {
-            "title": (None, title),
-            "file": (file.filename, await file.read(), file.content_type),
+        data = {
+            "title": form.get("title"),
+            "description": form.get("description"),
+            "age_rating": form.get("age_rating"),
+            "genre_ids": form.getlist("genre_ids"),
+            "country_ids": form.getlist("country_ids"),
+            "actor_ids": form.getlist("actor_ids"),
+            "director_ids": form.getlist("director_ids"),
         }
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post("/admin/upload_video", files=files)
+        files = []
+        if form.get("poster"):
+            poster = form.get("poster")
+            files.append(
+                ("poster", (poster.filename, await poster.read(), poster.content_type))
+            )
 
-        if response.status_code != 200:
+        # передаём данные как multipart/form-data
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "http://127.0.0.1:8000/admin/movies/new",
+                data=data,
+                files=files
+            )
+
+        if response.status_code != 302:
             return HTMLResponse(f"<h3>Ошибка загрузки: {response.text}</h3>", status_code=400)
 
         return RedirectResponse("/admin/movie/list", status_code=status.HTTP_302_FOUND)

@@ -1,44 +1,72 @@
-{% extends "sqladmin/layout.html" %} {% block content %}
+{% extends "sqladmin/layout.html" %}
+{% block content %}
 <div class="col-12">
   <div class="card">
     <div class="card-header">
-      <h3 class="card-title">Загрузка нового фильма с аудиодорожкой</h3>
+      <h3 class="card-title">Добавление нового фильма</h3>
     </div>
     <div class="card-body">
       <form method="post" enctype="multipart/form-data">
         <div class="mb-3">
           <label class="form-label">Название фильма</label>
-          <input
-            type="text"
-            name="title"
-            class="form-control"
-            placeholder="Введите название фильма"
-            required
-          />
+          <input type="text" name="title" class="form-control" required />
         </div>
 
         <div class="mb-3">
           <label class="form-label">Описание</label>
-          <textarea
-            name="description"
-            class="form-control"
-            rows="3"
-            placeholder="Краткое описание фильма"
-          ></textarea>
+          <textarea name="description" class="form-control" rows="3"></textarea>
+        </div>
+
+        <input type="hidden" name="duration" value="0" />
+
+        <div class="mb-3">
+          <label class="form-label">Возрастной рейтинг</label>
+          <input type="text" name="age_rating" class="form-control" placeholder="Например: 6+, 12+, 18+" />
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label">Жанры</label>
+          <select name="genre_ids" class="form-control" multiple>
+            {% for genre in genres %}
+              <option value="{{ genre.id }}">{{ genre.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label">Страны</label>
+          <select name="country_ids" class="form-control" multiple>
+            {% for country in countries %}
+              <option value="{{ country.id }}">{{ country.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label">Актёры</label>
+          <select name="actor_ids" class="form-control" multiple>
+            {% for actor in actors %}
+              <option value="{{ actor.id }}">{{ actor.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label">Режиссёры</label>
+          <select name="director_ids" class="form-control" multiple>
+            {% for director in directors %}
+              <option value="{{ director.id }}">{{ director.name }}</option>
+            {% endfor %}
+          </select>
         </div>
 
         <div class="mb-3">
           <label class="form-label">Постер (изображение)</label>
-          <input
-            type="file"
-            name="poster_file"
-            accept="image/*"
-            class="form-control"
-          />
+          <input type="file" name="poster" accept="image/*" class="form-control" />
         </div>
 
         <div class="form-footer">
-          <button type="submit" class="btn btn-primary">Загрузить</button>
+          <button type="submit" class="btn btn-primary">Добавить</button>
           <a href="/admin/movies" class="btn btn-secondary">Отмена</a>
         </div>
       </form>

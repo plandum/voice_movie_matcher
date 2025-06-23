@@ -6,6 +6,8 @@ from app.models import Movie, User
 from app.admin_views.movie_admin import MovieAdmin
 from app.admin_views import UserAdmin
 from app.admin_views.audio_track_admin import AudioTrackAdmin
+from app.admin_views import GenreAdmin, CountryAdmin, ActorAdmin, DirectorAdmin
+
 
 from jinja2 import ChoiceLoader, FileSystemLoader
 
@@ -28,3 +30,7 @@ def setup_admin(app, engine):
     admin_instance.add_view(MovieAdmin)
     admin_instance.add_view(UserAdmin)
     admin_instance.add_view(AudioTrackAdmin)
+    admin_instance.add_view(GenreAdmin)
+    admin_instance.add_view(CountryAdmin)
+    admin_instance.add_view(ActorAdmin)
+    admin_instance.add_view(DirectorAdmin)

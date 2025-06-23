@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, status, Form, UploadFile, File
+from fastapi import APIRouter, Request, status, Form, UploadFile, File, Depends
 from starlette.responses import RedirectResponse, HTMLResponse
 from starlette.templating import Jinja2Templates
 from sqladmin import Admin
@@ -7,6 +7,18 @@ import httpx
 import os
 import sqladmin
 from app.config import settings
+from app.database import get_db
+from sqlalchemy.orm import Session
+from app import models
+import shutil
+import uuid
+from app.models import Genre, Country, Actor, Director
+
+from typing import List
+
+from typing import List, Tuple
+import hashlib
+
 
 templates = Jinja2Templates(
     directory=[
@@ -18,34 +30,78 @@ templates = Jinja2Templates(
 router = APIRouter()
 
 @router.get("/admin/movies/new", response_class=HTMLResponse)
-async def show_form(request: Request):
-    from app.admin import admin_instance  # <-- важно импортировать здесь, чтобы подгрузился после setup_admin
+async def show_form(request: Request, db: Session = Depends(get_db)):
+    from app.admin import admin_instance
+
+    genres = db.query(Genre).order_by(Genre.name).all()
+    countries = db.query(Country).order_by(Country.name).all()
+    actors = db.query(Actor).order_by(Actor.name).all()
+    directors = db.query(Director).order_by(Director.name).all()
+
     return templates.TemplateResponse("admin/movie_upload_form.html", {
         "request": request,
-        "admin": admin_instance  # ← обязательно!
+        "admin": admin_instance,
+        "genres": genres,
+        "countries": countries,
+        "actors": actors,
+        "directors": directors
     })
 
+
 @router.post("/admin/movies/new")
-async def handle_upload(request: Request, title: str = Form(...), file: UploadFile = File(...)):
-    files = {
-        "title": (None, title),
-        "file": (file.filename, await file.read(), file.content_type),
-    }
+async def handle_upload(
+    title: str = Form(...),
+    description: str = Form(None),
+    age_rating: str = Form(None),
+    genre_ids: list[int] = Form([]),
+    country_ids: list[int] = Form([]),
+    actor_ids: list[int] = Form([]),
+    director_ids: list[int] = Form([]),
+    poster: UploadFile = File(None),
+    db: Session = Depends(get_db)
+):
+    existing_movie = db.query(models.Movie).filter_by(title=title).first()
+    if existing_movie:
+        raise HTTPException(status_code=400, detail="Фильм с таким названием уже существует")
 
-    async with httpx.AsyncClient() as client:
-        url = f"{settings.BACKEND_URL}/admin/upload_video"
-        response = await client.post(url, files=files)
+    poster_url = None
+    if poster:
+        os.makedirs("media/posters", exist_ok=True)
+        ext = os.path.splitext(poster.filename)[1]
+        generated_name = f"{uuid.uuid4().hex}{ext}"
+        poster_path = os.path.join("media/posters", generated_name)
+        with open(poster_path, "wb") as f:
+            shutil.copyfileobj(poster.file, f)
+        poster_url = poster_path
 
-    if response.status_code != 200:
-        return HTMLResponse(f"<h3>Ошибка загрузки: {response.text}</h3>", status_code=400)
+    genres = db.query(Genre).filter(Genre.id.in_(genre_ids)).all()
+    countries = db.query(Country).filter(Country.id.in_(country_ids)).all()
+    actors = db.query(Actor).filter(Actor.id.in_(actor_ids)).all()
+    directors = db.query(Director).filter(Director.id.in_(director_ids)).all()
+        
+    movie = models.Movie(
+        title=title,
+        description=description,
+        age_rating=age_rating,
+        poster_url=poster_url,
+        genres=genres,
+        countries=countries,
+        actors=actors,
+        directors=directors
+    )
+
+    db.add(movie)
+    db.commit()
+    db.refresh(movie)
 
     return RedirectResponse("/admin/movie/list", status_code=status.HTTP_302_FOUND)
+
 
 @router.get("/admin/audio-track/new", response_class=HTMLResponse)
 async def show_audio_track_form(request: Request):
     from app.models import Movie
     from app.database import SessionLocal
-    from app.admin import admin_instance  # <-- важно импортировать здесь, чтобы подгрузился после setup_admin
+    from app.admin import admin_instance
 
     db = SessionLocal()
     movies = db.query(Movie).order_by(Movie.title).all()
@@ -53,10 +109,9 @@ async def show_audio_track_form(request: Request):
 
     return templates.TemplateResponse("admin/upload_track.html", {
         "request": request,
-        "admin": admin_instance,  # ← критично для шаблона sqladmin/layout.html
+        "admin": admin_instance,
         "movies": movies
     })
-
 
 @router.post("/admin/audio-track/new")
 async def handle_audio_track_upload(
@@ -66,31 +121,37 @@ async def handle_audio_track_upload(
     file: UploadFile = File(...)
 ):
     from app.database import SessionLocal
-    from app.models import AudioTrack, AudioFingerprint
+    from app.models import AudioTrack, AudioFingerprint, Movie
     from app.utils.peaks import extract_peaks
+    from app.utils.fingerprinting import generate_hashes_from_peaks
     import librosa
     import shutil
     import os
-    from decimal import Decimal, ROUND_HALF_UP
-
-    def round_time(t: float) -> float:
-        return float(Decimal(str(t)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    import uuid
+    from librosa.effects import trim
 
     MEDIA_DIR = "media/uploads"
     os.makedirs(MEDIA_DIR, exist_ok=True)
 
-    path = os.path.join(MEDIA_DIR, file.filename)
+    unique_filename = f"{uuid.uuid4().hex}_{file.filename}"
+    path = os.path.join(MEDIA_DIR, unique_filename)
     with open(path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
     try:
-        y, sr = librosa.load(path, sr=None)
+        # Нормализуем аудио: частота 16к, моно, до 20 секунд
+        y, sr = librosa.load(path, sr=16000, mono=True, duration=20.0)
+        y, _ = trim(y)
+
         peaks = extract_peaks(y, sr)
+        hashes = generate_hashes_from_peaks(peaks)
+        duration = round(len(y) / sr)  # длительность после trim
     except Exception as e:
         return HTMLResponse(f"<h3>Ошибка анализа аудио: {e}</h3>", status_code=400)
 
     db = SessionLocal()
     try:
+        # Добавляем аудиотрек
         track = AudioTrack(
             movie_id=movie_id,
             language=language,
@@ -100,13 +161,21 @@ async def handle_audio_track_upload(
         db.commit()
         db.refresh(track)
 
-        for t in sorted(set(round_time(t) for t in peaks)):
-            db.add(AudioFingerprint(audio_track_id=track.id, timestamp=t))
-
+        # Сохраняем отпечатки
+        for h, offset in hashes:
+            db.add(AudioFingerprint(audio_track_id=track.id, hash=h, offset=offset))
         db.commit()
+
+        # Обновляем длительность фильма
+        movie = db.query(Movie).filter(Movie.id == movie_id).first()
+        if movie and (not movie.duration or movie.duration < duration):
+            movie.duration = duration
+            db.commit()
     finally:
         db.close()
+        print(f"Сохраняем {len(hashes)} хешей для аудиотрека")
+        print("Пример хеша:", hashes[0] if hashes else "none")
+        print("PEAKS UPLOAD:", peaks[:5])
+        print("sr (upload):", sr, "len(y):", len(y))
 
     return RedirectResponse("/admin/audio-track/list", status_code=status.HTTP_302_FOUND)
-
-

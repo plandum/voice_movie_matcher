@@ -1,5 +1,5 @@
 from sqladmin import ModelView
-from app.models import User, Movie
+from app.models import User, Movie, Genre, Country, Actor, Director
 
 
 class UserAdmin(ModelView, model=User):
@@ -14,3 +14,27 @@ class MovieAdmin(ModelView, model=Movie):
     name = "Movie"
     name_plural = "Movies"
     icon = "fa-solid fa-film"
+
+class GenreAdmin(ModelView, model=Genre):
+    column_list = [Genre.id, Genre.name]
+    name = "Жанр"
+    name_plural = "Жанры"
+    icon = "fa-solid fa-masks-theater"
+
+class CountryAdmin(ModelView, model=Country):
+    column_list = [Country.id, Country.name]
+    name = "Страна"
+    name_plural = "Страны"
+    icon = "fa-solid fa-earth-americas"
+
+class ActorAdmin(ModelView, model=Actor):
+    column_list = [Actor.id, Actor.name]
+    name = "Актёр"
+    name_plural = "Актёры"
+    icon = "fa-solid fa-user"
+
+class DirectorAdmin(ModelView, model=Director):
+    column_list = [Director.id, Director.name]
+    name = "Режиссёр"
+    name_plural = "Режиссёры"
+    icon = "fa-solid fa-clapperboard"

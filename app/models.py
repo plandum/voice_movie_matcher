@@ -1,10 +1,78 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, ForeignKey, TIMESTAMP, DateTime, func, Boolean
+from sqlalchemy import Column, Integer, String, ForeignKey, TIMESTAMP, DateTime, func, Boolean, Table, Float
 from sqlalchemy.dialects.mysql import BINARY
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
+
+
+movie_genres = Table(
+    "movie_genres", Base.metadata,
+    Column("movie_id", Integer, ForeignKey("movies.id", ondelete="CASCADE")),
+    Column("genre_id", Integer, ForeignKey("genres.id", ondelete="CASCADE"))
+)
+
+movie_countries = Table(
+    "movie_countries", Base.metadata,
+    Column("movie_id", Integer, ForeignKey("movies.id", ondelete="CASCADE")),
+    Column("country_id", Integer, ForeignKey("countries.id", ondelete="CASCADE"))
+)
+
+movie_actors = Table(
+    "movie_actors", Base.metadata,
+    Column("movie_id", Integer, ForeignKey("movies.id", ondelete="CASCADE")),
+    Column("actor_id", Integer, ForeignKey("actors.id", ondelete="CASCADE"))
+)
+
+movie_directors = Table(
+    "movie_directors", Base.metadata,
+    Column("movie_id", Integer, ForeignKey("movies.id", ondelete="CASCADE")),
+    Column("director_id", Integer, ForeignKey("directors.id", ondelete="CASCADE"))
+)
+
+class Genre(Base):
+    __tablename__ = "genres"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), unique=True, nullable=False)
+
+    movies = relationship("Movie", secondary=movie_genres, back_populates="genres")
+
+    def __str__(self):
+        return self.name
+
+class Country(Base):
+    __tablename__ = "countries"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), unique=True, nullable=False)
+
+    movies = relationship("Movie", secondary=movie_countries, back_populates="countries")
+
+    def __str__(self):
+        return self.name
+
+class Actor(Base):
+    __tablename__ = "actors"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), unique=True, nullable=False)
+
+    movies = relationship("Movie", secondary=movie_actors, back_populates="actors")
+
+    def __str__(self):
+        return self.name
+
+class Director(Base):
+    __tablename__ = "directors"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), unique=True, nullable=False)
+
+    movies = relationship("Movie", secondary=movie_directors, back_populates="directors")
+    
+    def __str__(self):
+        return self.name
+
+
+
 
 class Movie(Base):
     __tablename__ = "movies"
@@ -14,7 +82,14 @@ class Movie(Base):
     duration = Column(Integer, nullable=True)
     poster_url = Column(String(255), nullable=True)       # ➕ путь к постеру
     description = Column(String(1000), nullable=True)
-    created_at = Column(TIMESTAMP)
+    year = Column(Integer, nullable=True)
+    age_rating = Column(String(10), nullable=True)
+    created_at = Column(TIMESTAMP, server_default=func.now())
+
+    genres = relationship("Genre", secondary=movie_genres, back_populates="movies")
+    countries = relationship("Country", secondary=movie_countries, back_populates="movies")
+    actors = relationship("Actor", secondary=movie_actors, back_populates="movies")
+    directors = relationship("Director", secondary=movie_directors, back_populates="movies")
 
     def __str__(self):
         return self.title
@@ -42,12 +117,17 @@ class AudioTrack(Base):
         cascade="all, delete-orphan"
     )
 
+    def __str__(self):
+        return self.language
+
 class AudioFingerprint(Base):
     __tablename__ = "audio_fingerprints"
 
     id = Column(Integer, primary_key=True, index=True)
     audio_track_id = Column(Integer, ForeignKey("audio_tracks.id", ondelete="CASCADE"), nullable=False)
-    timestamp = Column(Integer, nullable=False)
+    hash = Column(String(16), nullable=False)  # хэш в виде hex (можно и BIGINT если хочешь int)
+    offset = Column(Float, nullable=False)     # смещение (в секундах)
+
 
 
 class User(Base):
