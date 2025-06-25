@@ -1,7 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
 from collections import Counter, defaultdict
-from decimal import Decimal, ROUND_HALF_UP
 import os, shutil, mimetypes, librosa, numpy as np
 
 from app.database import SessionLocal
@@ -9,7 +8,6 @@ from app.models import AudioFingerprint, AudioTrack, Movie
 from app.utils.audio import extract_audio_from_video
 from app.utils.peaks import extract_peaks
 from app.utils.fingerprinting import generate_hashes_from_peaks
-
 
 router = APIRouter(prefix="/match", tags=["match"])
 MEDIA_DIR = "media/fragments"
@@ -21,8 +19,11 @@ def get_db():
     finally:
         db.close()
 
-def round_time(t: float) -> float:
-    return float(Decimal(str(t)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+def _as_float(val):
+    try:
+        return round(float(val), 5)
+    except Exception:
+        return float(val)
 
 @router.post("/audio")
 def match_audio(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -35,90 +36,108 @@ def match_audio(file: UploadFile = File(...), db: Session = Depends(get_db)):
     is_wav = mime_type == "audio/wav" or fragment_path.endswith(".wav")
     audio_path = fragment_path
 
+    # --- Извлечение аудио при необходимости ---
     if not is_wav:
         try:
             audio_path = extract_audio_from_video(fragment_path, MEDIA_DIR)
         except Exception as e:
             raise HTTPException(500, f"Ошибка извлечения аудио: {e}")
 
+    # --- Препроцессинг и отпечатки ---
     try:
-        # Открываем в нужном формате, без trim!
         y, sr = librosa.load(audio_path, sr=16000, mono=True)
-        if np.max(np.abs(y)) > 0:
-            y = y / np.max(np.abs(y))
-        # Пики и хеши — тот же threshold/fan_value что и при загрузке!
-        peaks = extract_peaks(y, sr, frame_size=512, hop_size=128, threshold=0.1)
-        hashes = generate_hashes_from_peaks(peaks, fan_value=15)
+        if y is None or len(y) == 0:
+            raise HTTPException(400, "Ошибка чтения аудиофайла: пустой сигнал")
+        peaks = extract_peaks(
+            y, sr,
+            frame_size=512, hop_size=128,
+            threshold=0.05,
+            normalize=True
+        )
+        hashes = [(h, _as_float(t1)) for h, t1 in generate_hashes_from_peaks(peaks, fan_value=25, time_precision=0.1)]
+        frag_duration = len(y) / sr
 
-        print("Длительность аудио (сек):", len(y) / sr)
-        print("Количество пиков:", len(peaks))
-        print("Количество хешей:", len(hashes))
-        print("Пример хеша:", hashes[0] if hashes else "none")
-
-        # Если хешей мало — можно повторить с еще меньшим threshold
         if len(hashes) < 5:
-            peaks = extract_peaks(y, sr, frame_size=512, hop_size=128, threshold=0.1)
-            hashes = generate_hashes_from_peaks(peaks, fan_value=25)
-            print("🔁 Повторно:")
-            print("  Кол-во пиков:", len(peaks))
-            print("  Кол-во хешей:", len(hashes))
-            print("  Пример хеша:", hashes[0] if hashes else "none")
+            peaks = extract_peaks(
+                y, sr,
+                frame_size=512, hop_size=128,
+                threshold=0.03,
+                normalize=True
+            )
+            hashes = [(h, _as_float(t1)) for h, t1 in generate_hashes_from_peaks(peaks, fan_value=35, time_precision=0.1)]
 
         if len(hashes) == 0:
             raise HTTPException(400, "Слишком мало хешей для анализа")
     except Exception as e:
         raise HTTPException(500, f"Ошибка обработки аудио: {e}")
 
-    # --- Сопоставление ---
-    db_hashes = db.query(AudioFingerprint.hash, AudioFingerprint.audio_track_id, AudioFingerprint.offset).all()
+    # --- Сопоставление хешей с базой ---
+    db_hashes = [
+        (h, track_id, _as_float(offset))
+        for h, track_id, offset in db.query(AudioFingerprint.hash, AudioFingerprint.audio_track_id, AudioFingerprint.offset).all()
+    ]
     hash_dict = defaultdict(list)
     for h, track_id, offset in db_hashes:
         hash_dict[h].append((track_id, offset))
 
-    counter = Counter()
+    # --- Группируем совпадения по (track_id, offset) ---
+    DELTA_TOLERANCE = 0.5
+    offset_bins = defaultdict(list)
+
     for h, t1 in hashes:
-        if h in hash_dict:
-            for track_id, t2 in hash_dict[h]:
-                delta = round_time(t2 - t1)
-                counter[(track_id, delta)] += 1
+        for track_id, t2 in hash_dict.get(h, []):
+            offset = _as_float(t2 - t1)
+            offset_bin = round(offset / DELTA_TOLERANCE) * DELTA_TOLERANCE
+            offset_bins[(track_id, offset_bin)].append((t2, t1))
 
-    print(f"Совпадающих пар: {sum(counter.values())}")
-    print("HASHES SEARCH:", hashes[:5])
+    # --- Фильтрация offset: не может быть больше (длина_трек - длина_фрагмента) ---
+    plausible_offsets = {}
+    for (track_id, offset), pairs in offset_bins.items():
+        track = db.query(AudioTrack).filter(AudioTrack.id == track_id).first()
+        movie = db.query(Movie).filter(Movie.id == track.movie_id).first() if track else None
+        max_offset = (movie.duration or 0) - frag_duration if movie else None
+        # отсекаем странные значения
+        if movie and 0 <= offset <= max_offset + 3:
+            plausible_offsets[(track_id, offset)] = len(pairs)
 
-    # Fallback: если совсем не найдено, пробуем короткие хеши (с меньшим весом)
-    if not counter:
+    # --- Если ничего не нашли, пробуем fallback по коротким hash ---
+    if not plausible_offsets:
         short_hash_dict = defaultdict(list)
         for h, track_id, offset in db_hashes:
             short_hash_dict[h[:8]].append((track_id, offset))
         for h, t1 in hashes:
             short = h[:8]
-            if short in short_hash_dict:
-                for track_id, t2 in short_hash_dict[short]:
-                    delta = round_time(t2 - t1)
-                    counter[(track_id, delta)] += 0.3
-    
-    if not counter:
+            for track_id, t2 in short_hash_dict.get(short, []):
+                offset = _as_float(t2 - t1)
+                offset_bin = round(offset / DELTA_TOLERANCE) * DELTA_TOLERANCE
+                plausible_offsets[(track_id, offset_bin)] = plausible_offsets.get((track_id, offset_bin), 0) + 1
+
+    if not plausible_offsets:
         very_short_hash_dict = defaultdict(list)
         for h, track_id, offset in db_hashes:
             very_short_hash_dict[h[:6]].append((track_id, offset))
         for h, t1 in hashes:
             short = h[:6]
-            if short in very_short_hash_dict:
-                for track_id, t2 in very_short_hash_dict[short]:
-                    delta = round_time(t2 - t1)
-                    counter[(track_id, delta)] += 0.1
+            for track_id, t2 in very_short_hash_dict.get(short, []):
+                offset = _as_float(t2 - t1)
+                offset_bin = round(offset / DELTA_TOLERANCE) * DELTA_TOLERANCE
+                plausible_offsets[(track_id, offset_bin)] = plausible_offsets.get((track_id, offset_bin), 0) + 1
 
-
-    if not counter:
+    if not plausible_offsets:
         raise HTTPException(404, detail="Совпадений не найдено")
 
-    (best_track_id, best_offset), match_score = counter.most_common(1)[0]
+    # --- Выбор лучшего совпадения ---
+    (best_track_id, best_offset), match_score = max(plausible_offsets.items(), key=lambda x: x[1])
     total_checked = len(hashes)
-    confidence = round(min(match_score / total_checked, 1.0) * 100, 2)
+    confidence = round(min(match_score / total_checked, 1.0) * 100, 2) if total_checked > 0 else 0.0
 
+    # --- Найти инфо о фильме ---
     track = db.query(AudioTrack).filter(AudioTrack.id == best_track_id).first()
-    movie = db.query(Movie).filter(Movie.id == track.movie_id).first()
+    movie = db.query(Movie).filter(Movie.id == track.movie_id).first() if track else None
+    if not track or not movie:
+        raise HTTPException(404, "Фильм или трек не найден")
 
+    # --- Чистим временные файлы ---
     try:
         os.remove(fragment_path)
         if not is_wav and os.path.exists(audio_path):
