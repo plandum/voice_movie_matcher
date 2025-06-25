@@ -18,6 +18,15 @@ from app.models import Genre, Country, Actor, Director, AudioTrack, AudioFingerp
 import hashlib
 from typing import List
 
+import logging
+import mimetypes
+import librosa
+import numpy as np
+
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 templates = Jinja2Templates(
     directory=[
         "app/templates",
@@ -111,13 +120,11 @@ async def show_audio_track_form(request: Request):
 
 @router.post("/admin/audio-track/new")
 async def handle_audio_track_upload(
-    request: Request,
     movie_id: int = Form(...),
-    language: str = Form("unknown"),
-    file: UploadFile = File(...)
+    language: str = Form("en"),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
 ):
-    import librosa
-    import numpy as np
     from app.utils.peaks import extract_peaks
     from app.utils.fingerprinting import generate_hashes_from_peaks
 
@@ -125,70 +132,135 @@ async def handle_audio_track_upload(
     os.makedirs(MEDIA_DIR, exist_ok=True)
     unique_filename = f"{uuid.uuid4().hex}_{file.filename}"
     path = os.path.join(MEDIA_DIR, unique_filename)
-    with open(path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    try:
+        with open(path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        logger.error("Ошибка сохранения файла %s: %s", file.filename, e)
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения файла: {e}")
 
     try:
-        # Загружаем и обрабатываем аудио
         y, sr = librosa.load(path, sr=16000, mono=True)
-        if y is None or len(y) == 0:
-            return HTMLResponse("<h3>Ошибка анализа аудио: Пустой сигнал</h3>", status_code=400)
-        # Используем те же параметры, что и при матчинге
-        peaks = extract_peaks(
-            y, sr,
-            frame_size=512, hop_size=128,
-            threshold=0.05,  # более чувствительно для любых дорожек
-            normalize=True
-        )
-        hashes = generate_hashes_from_peaks(peaks, fan_value=18)
+        duration = len(y) / sr if y.size > 0 else None
 
-        print("UPLOAD PEAKS:", peaks[:20])
-        print("UPLOAD HASHES:", hashes[:20])
-        duration = round(len(y) / sr)
+        if duration is None or duration < 1.0:
+            logger.error("Аудио слишком короткое или пустое: %.2f сек", duration or 0)
+            raise HTTPException(status_code=400, detail="Аудио слишком короткое (<1 сек) или пустое")
+
+        logger.debug("Загружен аудиосигнал: длина=%d, частота=%d Гц", y.size, sr)
+        peaks, freqs = extract_peaks(
+            y,
+            sr,
+            normalize=True,
+            return_freqs=True,
+            frame_size=512,
+            hop_size=128,
+            min_freq=100.0,
+            max_freq=4000.0,
+            threshold=0.5
+        )
+        # Проверка, что peaks и freqs — корректные numpy-массивы
+        if not isinstance(peaks, np.ndarray) or not isinstance(freqs, np.ndarray):
+            logger.error("peaks или freqs не являются numpy-массивами: peaks=%s, freqs=%s", type(peaks), type(freqs))
+            raise HTTPException(status_code=400, detail="Некорректный формат пиков или частот")
+        if peaks.size == 0 or freqs.size == 0:
+            logger.error("peaks или freqs пусты: peaks_size=%d, freqs_size=%d", peaks.size, freqs.size)
+            raise HTTPException(status_code=400, detail="Пустые пики или частоты")
+        if peaks.size != freqs.size:
+            logger.error("Несоответствие размеров peaks (%d) и freqs (%d)", peaks.size, freqs.size)
+            raise HTTPException(status_code=400, detail="Несоответствие размеров пиков и частот")
+        logger.debug("Пики (первые 5): %s, Частоты (первые 5): %s", peaks[:5], freqs[:5])
+        hashes = generate_hashes_from_peaks(
+            peaks,
+            freqs=freqs,
+            fan_value=18,
+            min_delta=0.3,
+            max_delta=8.0,
+            time_precision=0.05
+        )
+
+        logger.info("Длительность аудио: %.2f сек", duration)
+        logger.info("Количество пиков: %d", peaks.size)
+        logger.info("Количество хешей: %d", len(hashes))
+        logger.info("Пример хеша: %s", hashes[0] if hashes else "none")
 
         if len(hashes) < 5:
-            # Пробуем повторно, если очень мало данных
-            print("Мало хешей, повторная попытка с еще меньшим порогом и большим fan_value")
-            peaks = extract_peaks(
-                y, sr,
-                frame_size=512, hop_size=128,
-                threshold=0.03,
-                normalize=True
+            logger.warning("Мало хешей (%d), повторная попытка с fan_value=25", len(hashes))
+            peaks, freqs = extract_peaks(
+                y,
+                sr,
+                normalize=True,
+                return_freqs=True,
+                frame_size=512,
+                hop_size=128,
+                min_freq=100.0,
+                max_freq=4000.0,
+                threshold=0.3
             )
-            hashes = generate_hashes_from_peaks(peaks, fan_value=25)
+            if not isinstance(peaks, np.ndarray) or not isinstance(freqs, np.ndarray):
+                logger.error("peaks или freqs не являются numpy-массивами при повторной попытке: peaks=%s, freqs=%s", type(peaks), type(freqs))
+                raise HTTPException(status_code=400, detail="Некорректный формат пиков или частот при повторной попытке")
+            if peaks.size == 0 or freqs.size == 0:
+                logger.error("peaks или freqs пусты при повторной попытке: peaks_size=%d, freqs_size=%d", peaks.size, freqs.size)
+                raise HTTPException(status_code=400, detail="Пустые пики или частоты при повторной попытке")
+            if peaks.size != freqs.size:
+                logger.error("Несоответствие размеров peaks (%d) и freqs (%d) при повторной попытке", peaks.size, freqs.size)
+                raise HTTPException(status_code=400, detail="Несоответствие размеров пиков и частот при повторной попытке")
+            logger.debug("Пики (повторная попытка, первые 5): %s, Частоты (первые 5): %s", peaks[:5], freqs[:5])
+            hashes = generate_hashes_from_peaks(
+                peaks,
+                freqs=freqs,
+                fan_value=25,
+                min_delta=0.3,
+                max_delta=8.0,
+                time_precision=0.05
+            )
+            logger.info("После повторной попытки: %d хешей", len(hashes))
 
-        if len(hashes) == 0:
-            return HTMLResponse("<h3>Ошибка анализа аудио: не удалось получить отпечатки</h3>", status_code=400)
-
+        if len(hashes) < 5:
+            logger.error("Не удалось сгенерировать достаточно хешей: %d", len(hashes))
+            raise HTTPException(status_code=400, detail="Не удалось сгенерировать достаточно отпечатков (<5)")
     except Exception as e:
-        print("Ошибка анализа аудио:", e)
-        return HTMLResponse(f"<h3>Ошибка анализа аудио: {e}</h3>", status_code=400)
+        logger.error("Ошибка обработки аудио %s: %s", file.filename, e)
+        raise HTTPException(status_code=400, detail=f"Ошибка обработки аудио: {e}")
 
-    db = SessionLocal()
     try:
         track = AudioTrack(
             movie_id=movie_id,
             language=language,
-            track_path=path
+            track_path=path,
+            duration=duration
         )
         db.add(track)
         db.commit()
         db.refresh(track)
 
-        for h, offset in hashes:
-            db.add(AudioFingerprint(audio_track_id=track.id, hash=h, offset=float(round(float(offset), 5))))
+        fingerprints = [
+            AudioFingerprint(
+                audio_track_id=track.id,
+                hash=h,
+                offset=float(round(float(offset), 5))
+            )
+            for h, offset in hashes
+        ]
+        db.bulk_save_objects(fingerprints)
         db.commit()
 
-        # Обновляем длительность фильма, если неизвестна или новая больше
         movie = db.query(Movie).filter(Movie.id == movie_id).first()
         if movie and (not movie.duration or movie.duration < duration):
             movie.duration = duration
             db.commit()
+
+        logger.info("Сохранено %d хешей для аудиодорожки ID=%d", len(hashes), track.id)
+    except Exception as e:
+        logger.error("Ошибка сохранения в базу данных: %s", e)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения в базу данных: {e}")
     finally:
-        db.close()
-        print(f"Сохраняем {len(hashes)} хешей для аудиотрека")
-        print("Пример хеша:", hashes[0] if hashes else "none")
-        print("PEAKS UPLOAD:", peaks[:5])
-        print("sr (upload):", sr, "len(y):", len(y))
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception as e:
+            logger.warning("Ошибка удаления файла %s: %s", path, e)
 
     return RedirectResponse("/admin/audio-track/list", status_code=302)

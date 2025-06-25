@@ -108,6 +108,7 @@ class AudioTrack(Base):
     movie_id = Column(Integer, ForeignKey("movies.id", ondelete="CASCADE"), nullable=False)
     language = Column(String(50), nullable=True)  # например, "en", "ru", "es"
     track_path = Column(String(255), nullable=True)  # путь к аудиофайлу
+    duration = Column(Float, nullable=True)
     created_at = Column(TIMESTAMP, server_default=func.now())
 
     # связь с фингерпринтами
